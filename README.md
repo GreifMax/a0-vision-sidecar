@@ -53,12 +53,13 @@ Preset defaults for the Vision slot: **64000 context, 70% for history** (new pre
 
 1. Download `vision_sidecar.zip` from Releases
 2. Agent Zero → **Settings → Plugins → Install → From ZIP** → select the ZIP
-3. Restart the WebUI (`Ctrl+Shift+R`)
+3. Add the Vision slot via the script (check below)
+4. Restart the WebUI (`Ctrl+Shift+R`)
 
 ### From Git
 
 ```bash
-git clone https://github.com/YOURNAME/vision_sidecar.git
+git clone https://github.com/GreifMax/a0-vision-sidecar
 cp -r vision_sidecar /path/to/agent-zero/usr/plugins/vision_sidecar
 # restart Agent Zero
 ```
