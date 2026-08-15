@@ -1,0 +1,55 @@
+<html>
+<head>
+  <title>Vision Sidecar Settings</title>
+  <script type="module">
+    import { store } from "/components/plugins/plugin-settings-store.js";
+  </script>
+</head>
+<body>
+  <div x-data>
+    <div class="field">
+      <div class="field-label">
+        <div class="field-title">Vision Sidecar</div>
+        <div class="field-description">Configure the optional dedicated <b>Vision Model</b> in <b>Settings → Model Presets → Vision Model</b>.<br/>Optional dedicated model for <code>vision_load</code> — used when Main has no vision. Leave empty to use Main's vision.</div>
+      </div>
+    </div>
+    <div class="field" style="opacity:0.85; border:1px dashed var(--color-border); padding:0.8rem; border-radius:8px;">
+      <div class="field-label">
+        <div class="field-title" style="font-size:0.9rem;">Where to set Vision Model</div>
+        <div class="field-description">Open <b>Settings → Model Presets</b> (Edit). Each preset now has <b>Main / Vision / Utility / Embedding</b>. Put your cheap vision helper (e.g. <code>gpt-4o-mini</code>, <code>qwen2-vl</code>) in the <b>Vision Model</b> section. Leave it empty to use Main's vision. Supports GLM 5.2/5.3, DeepSeek V4 Flash/Pro etc.</div>
+      </div>
+    </div>
+    <hr style="margin:1rem 0; border:none; border-top:1px solid var(--color-border);" />
+    <div class="field">
+      <div class="field-label">
+        <div class="field-title">Delegated system prompt</div>
+        <div class="field-description">System message sent to the Vision Model alongside your query + images.</div>
+      </div>
+      <div class="field-control">
+        <textarea x-model="config.behaviour.delegated_system" rows="3" placeholder="You are a precise vision analyst..."></textarea>
+      </div>
+    </div>
+    <div class="field">
+      <div class="field-label">
+        <div class="field-title">Timeout (seconds)</div>
+        <div class="field-description">How long to wait for the vision model.</div>
+      </div>
+      <div class="field-control">
+        <input type="number" x-model.number="config.behaviour.timeout" />
+      </div>
+    </div>
+    <div class="field">
+      <div class="field-label">
+        <div class="field-title">Max tokens</div>
+        <div class="field-description">Not yet enforced per-call; kept for future caps.</div>
+      </div>
+      <div class="field-control">
+        <input type="number" x-model.number="config.behaviour.max_tokens" />
+      </div>
+    </div>
+    <div class="field" style="margin-top:1rem; opacity:0.7;">
+      <div class="field-description">Pushback: <code>vision_load(..., raw=true)</code> always bypasses delegation and injects images directly into Main (useful for side-by-side comparison when Main must see pixels).</div>
+    </div>
+  </div>
+</body>
+</html>

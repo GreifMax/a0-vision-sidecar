@@ -1,0 +1,241 @@
+diff --git a/plugins/_model_config/extensions/webui/chat-input-progress-start/model-switcher.html b/plugins/_model_config/extensions/webui/chat-input-progress-start/model-switcher.html
+index 40efc579..1afea1cc 100644
+--- a/plugins/_model_config/extensions/webui/chat-input-progress-start/model-switcher.html
++++ b/plugins/_model_config/extensions/webui/chat-input-progress-start/model-switcher.html
+@@ -65,6 +65,16 @@
+                         </span>
+                       </div>
+                     </template>
++                    <template x-if="preset.vision?.name">
++                      <div class="model-switcher-model-row">
++                        <span class="model-switcher-model-label">Vision</span>
++                        <span class="model-switcher-model-value">
++                          <span x-text="preset.vision.provider" style="opacity:0.5;"></span>
++                          <span style="opacity:0.3; margin:0 3px;">/</span>
++                          <span x-text="preset.vision.name"></span>
++                        </span>
++                      </div>
++                    </template>
+                     <template x-if="preset.utility?.name">
+                       <div class="model-switcher-model-row">
+                         <span class="model-switcher-model-label">Utility</span>
+diff --git a/plugins/_model_config/helpers/model_config.py b/plugins/_model_config/helpers/model_config.py
+index 6a138645..07eee0f9 100644
+--- a/plugins/_model_config/helpers/model_config.py
++++ b/plugins/_model_config/helpers/model_config.py
+@@ -16,11 +16,18 @@ PRESET_SCOPE_GLOBAL = "global"
+ PRESET_SCOPE_PROJECT = "project"
+ PRESET_SLOT_CONFIG_SECTIONS = {
+     "chat": "chat_model",
++    "vision": "vision_model",
+     "utility": "utility_model",
+     "embedding": "embedding_model",
+ }
+ MODEL_SLOT_PRESET_REPLACE_FIELDS = {"kwargs"}
+ IMPLICIT_PRESET_SLOT_DEFAULTS = {
++    "vision": {
++        "rl_requests": 0,
++        "rl_input": 0,
++        "rl_output": 0,
++        "kwargs": {},
++    },
+     "utility": {
+         "ctx_length": 128000,
+         "ctx_input": 0.7,
+@@ -267,6 +274,10 @@ def _clean_preset_for_file(preset: dict) -> dict:
+         slot_config = preset.get(slot)
+         if isinstance(slot_config, dict):
+             slot_clean = _strip_ui_fields(slot_config, strip_api_key=True)
++            if slot == "vision" and _slot_has_identity(slot_clean):
++                slot_clean["vision"] = True
++                if "max_embeds" not in slot_clean:
++                    slot_clean["max_embeds"] = 10
+             cleaned[slot] = (
+                 slot_clean
+                 if name == DEFAULT_PRESET_NAME
+@@ -339,7 +350,7 @@ def validate_presets(presets: list, *, require_default: bool = True) -> list:
+ def normalize_config_for_save(config: dict) -> dict:
+     """Remove UI-only fields and inline API keys before storing scoped config."""
+     cleaned = deepcopy(config or {})
+-    for section_name in ("chat_model", "utility_model", "embedding_model"):
++    for section_name in ("chat_model", "vision_model", "utility_model", "embedding_model"):
+         section = cleaned.get(section_name)
+         if isinstance(section, dict):
+             cleaned[section_name] = _strip_ui_fields(section, strip_api_key=True)
+@@ -766,6 +777,11 @@ def get_embedding_model_config(agent=None) -> dict:
+     return model_cfg
+ 
+ 
++
++def get_vision_model_config(agent=None) -> dict:
++    """Get vision model config, with per-chat override if active (Vision Sidecar preset slot)."""
++    return get_effective_config(agent).get("vision_model", {})
++
+ def is_chat_override_allowed(agent=None) -> bool:
+     """The unified preset switcher is always enabled."""
+     return True
+diff --git a/plugins/_model_config/webui/main.html b/plugins/_model_config/webui/main.html
+index 7aa9908e..4ddd08dc 100644
+--- a/plugins/_model_config/webui/main.html
++++ b/plugins/_model_config/webui/main.html
+@@ -72,6 +72,16 @@
+               </div>
+             </section>
+ 
++            <section class="preset-model-section">
++              <div class="preset-model-heading">
++                <div class="section-title">Vision Model</div>
++                <div class="section-description">Optional dedicated model for vision_load — used when Main has no vision. Leave empty to use Main's vision.</div>
++              </div>
++              <div x-data="{ get model() { return selectedPreset.vision; }, modelType: 'vision', providers: $store.modelConfig.chatProviders, searchType: 'chat', apiKeyMode: 'store', get providerFallback() { return selectedPreset.chat.provider; }, get apiBaseFallback() { return selectedPreset.chat.api_base; } }">
++                <x-component path="/plugins/_model_config/webui/model-field.html"></x-component>
++              </div>
++            </section>
++
+             <section class="preset-model-section">
+               <div class="preset-model-heading">
+                 <div class="section-title">Utility Model</div>
+diff --git a/plugins/_model_config/webui/model-config-store.js b/plugins/_model_config/webui/model-config-store.js
+index 5e69bde2..9d5fb3b9 100644
+--- a/plugins/_model_config/webui/model-config-store.js
++++ b/plugins/_model_config/webui/model-config-store.js
+@@ -7,6 +7,7 @@ import { switcherState, switcherMethods } from "/plugins/_model_config/webui/swi
+ 
+ export const MODEL_SECTIONS = [
+   { key: 'chat_model', title: 'Main Model', desc: 'Primary model for chat, reasoning, and browser tasks.' },
++  { key: 'vision_model', title: 'Vision Model', desc: 'Optional dedicated model for vision_load — used when Main has no vision. Leave empty to use Main\'s vision.' },
+   { key: 'utility_model', title: 'Utility Model', desc: 'Lightweight model for background tasks: memory management, prompt preparation, summarization.' },
+   { key: 'embedding_model', title: 'Embedding Model', desc: 'Model for generating vector embeddings used in knowledge retrieval.' }
+ ];
+@@ -59,6 +60,12 @@ function isBlankPresetValue(value) {
+ }
+ 
+ const IMPLICIT_PRESET_SLOT_DEFAULTS = {
++  vision: {
++    rl_requests: 0,
++    rl_input: 0,
++    rl_output: 0,
++    kwargs: {},
++  },
+   utility: {
+     ctx_length: 128000,
+     ctx_input: 0.7,
+@@ -143,6 +150,7 @@ export function configFromPreset(preset, baseConfig, stripApiKey = true) {
+   const config = clonePlain(baseConfig || {});
+   const slots = [
+     ['chat', 'chat_model'],
++    ['vision', 'vision_model'],
+     ['utility', 'utility_model'],
+     ['embedding', 'embedding_model'],
+   ];
+@@ -208,6 +216,7 @@ export const store = createStore("modelConfig", {
+     const slot = value => ({ provider: '', name: '', api_key: '', api_base: '', kwargs: {}, ...(value || {}) });
+     const defaultConfig = {
+       chat_model: slot(rawDefault.chat),
++      vision_model: slot(rawDefault.vision),
+       utility_model: slot(rawDefault.utility),
+       embedding_model: slot(rawDefault.embedding),
+     };
+@@ -219,6 +228,7 @@ export const store = createStore("modelConfig", {
+       return {
+         name: p.name || '',
+         chat: { ...slot(effective.chat_model), _kwargs_text: kwargsToText(effective.chat_model?.kwargs) },
++        vision: { ...slot(effective.vision_model), _kwargs_text: kwargsToText(effective.vision_model?.kwargs) },
+         utility: { ...slot(effective.utility_model), _kwargs_text: kwargsToText(effective.utility_model?.kwargs) },
+         embedding: { ...slot(effective.embedding_model), _kwargs_text: kwargsToText(effective.embedding_model?.kwargs) },
+       };
+@@ -339,11 +349,21 @@ export const store = createStore("modelConfig", {
+           this.presets.find(p => p.name === DEFAULT_PRESET_NAME)
+           || this.presets[0]
+           || {
+-            chat: { provider: '', name: '', api_base: '', kwargs: {}, _kwargs_text: '' },
+-            utility: { provider: '', name: '', api_base: '', kwargs: {}, _kwargs_text: '' },
++            chat: { provider: '', name: '', api_base: '', ctx_length: 200000, ctx_history: 0.7, vision: false, max_embeds: 10, kwargs: {}, _kwargs_text: '' },
++            vision: { provider: '', name: '', api_base: '', ctx_length: 64000, ctx_history: 0.7, vision: true, max_embeds: 10, kwargs: {}, _kwargs_text: '' },
++            utility: { provider: '', name: '', api_base: '', ctx_length: 128000, ctx_input: 0.7, kwargs: {}, _kwargs_text: '' },
+             embedding: { provider: '', name: '', api_base: '', kwargs: {}, _kwargs_text: '' },
+           }
+         );
++        // ensure vision slot defaults for new profiles (64000 / 0.7) while existing presets unchanged
++        if (!base.vision || typeof base.vision.ctx_length === 'undefined') {
++          base.vision = { provider: '', name: '', api_base: '', ctx_length: 64000, ctx_history: 0.7, vision: true, max_embeds: 10, kwargs: {}, _kwargs_text: '', ...(base.vision||{}) };
++          if (!base.vision.ctx_length) base.vision.ctx_length = 64000;
++          if (typeof base.vision.ctx_history === 'undefined') base.vision.ctx_history = 0.7;
++        }
++        if (!base.chat || typeof base.chat.ctx_length === 'undefined') {
++          base.chat = { provider: '', name: '', api_base: '', ctx_length: 200000, ctx_history: 0.7, vision: false, max_embeds: 10, kwargs: {}, _kwargs_text: '', ...(base.chat||{}) };
++        }
+         const preset = {
+           ...base,
+           _key: nextPresetKey++,
+@@ -420,10 +440,13 @@ export const store = createStore("modelConfig", {
+     const clean = presets.map(p => {
+       const c = { name: p.name };
+       const isDefault = p._originalName === DEFAULT_PRESET_NAME;
+-      for (const slot of ['chat', 'utility']) {
++      for (const slot of ['chat', 'vision', 'utility']) {
+         if (p[slot]) {
+           const rest = cleanPresetSlot(p[slot], true, slot, isDefault);
+-          if (hasModelIdentity(rest)) c[slot] = rest;
++          if (hasModelIdentity(rest)) {
++            if (slot === 'vision') { rest.vision = true; if (!('max_embeds' in rest)) rest.max_embeds = 10; }
++            c[slot] = rest;
++          }
+         }
+       }
+       if (p.embedding) {
+@@ -608,6 +631,7 @@ export const store = createStore("modelConfig", {
+     const label = (list, id) => (list.find(x => x.value === id) || {}).label || id || '\u2014';
+     return [
+       { icon: 'chat', title: 'Main', cfg: preset?.chat, pList: chatP },
++      { icon: 'eye', title: 'Vision', cfg: preset?.vision, pList: chatP },
+       { icon: 'manufacturing', title: 'Utility', cfg: preset?.utility, pList: chatP },
+       { icon: 'database', title: 'Embedding', cfg: preset?.embedding, pList: embedP },
+     ].map(s => ({ icon: s.icon, title: s.title, provider: label(s.pList, s.cfg?.provider), name: s.cfg?.name || '\u2014' }));
+diff --git a/plugins/_model_config/webui/model-field.html b/plugins/_model_config/webui/model-field.html
+index e88b905f..756e8edb 100644
+--- a/plugins/_model_config/webui/model-field.html
++++ b/plugins/_model_config/webui/model-field.html
+@@ -130,7 +130,7 @@
+       </div>
+     </template>
+ 
+-    <!-- Vision support (chat only) -->
++    <!-- Vision support (Main chat only — Vision slot is always vision-capable) -->
+     <template x-if="modelType === 'chat'">
+       <div class="field">
+         <div class="field-label">
+@@ -146,7 +146,7 @@
+       </div>
+     </template>
+ 
+-    <!-- Context window size (main and utility only) -->
++    <!-- Context window size -->
+     <template x-if="modelType !== 'embedding'">
+       <div class="field">
+         <div class="field-label">
+@@ -180,8 +180,8 @@
+           </div>
+         </div>
+ 
+-        <!-- Chat-specific: ctx_history, max_embeds -->
+-        <template x-if="modelType === 'chat'">
++        <!-- Chat/Vision-specific: ctx_history, max_embeds -->
++        <template x-if="modelType === 'chat' || modelType === 'vision'">
+           <div>
+             <div class="field">
+               <div class="field-label">
+@@ -193,11 +193,11 @@
+                 <span class="range-value" x-text="model.ctx_history"></span>
+               </div>
+             </div>
+-            <template x-if="model.vision">
++            <template x-if="model.vision || modelType === 'vision'">
+               <div class="field">
+                 <div class="field-label">
+                   <div class="field-title">Max embeds</div>
+-                  <div class="field-description">Maximum number of embedded images used by the chat model. Set to 0 for unlimited.</div>
++                  <div class="field-description">Maximum number of embedded images used by the model. Set to 0 for unlimited.</div>
+                 </div>
+                 <div class="field-control">
+                   <input type="number" min="0" x-model.number="model.max_embeds" x-init="if (!model.max_embeds) model.max_embeds = 10" />

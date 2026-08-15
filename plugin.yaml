@@ -1,0 +1,8 @@
+name: vision_sidecar
+title: Vision Sidecar
+description: Tolerant vision_load (accepts single string) + optional dedicated vision model that answers a focused query about images without bloating the main context.
+version: 0.1.0
+settings_sections:
+  - agent
+per_project_config: true
+per_agent_config: true
