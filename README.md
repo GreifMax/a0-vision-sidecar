@@ -60,7 +60,7 @@ Preset defaults for the Vision slot: **64000 context, 70% for history** (new pre
 
 ```bash
 git clone https://github.com/GreifMax/a0-vision-sidecar
-cp -r a0-vision_sidecar /a0/usr/plugins/vision-sidecar
+cp -r a0-vision_sidecar /a0/usr/plugins/vision_sidecar
 # restart Agent Zero
 ```
 
