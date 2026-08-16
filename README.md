@@ -68,8 +68,8 @@ cp -r a0-vision_sidecar /a0/usr/plugins/vision-sidecar
 
 ```bash
 # from your Agent Zero root (where plugins/_model_config lives):
-bash usr/plugins/vision-sidecar/scripts/enable_vision_slot.sh
-# or: python usr/plugins/vision-sidecar/scripts/enable_vision_slot.py
+bash /a0/usr/plugins/vision-sidecar/scripts/enable_vision_slot.sh
+# or: python /a0/usr/plugins/vision-sidecar/scripts/enable_vision_slot.py
 # then restart Agent Zero and hard-refresh the browser (Ctrl+Shift+R)
 ```
 
