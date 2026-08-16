@@ -70,14 +70,14 @@ The installer is **self-contained pure Python** — no git or `patch(1)` require
 
 ```bash
 # any directory works; it auto-finds the Agent Zero root
-bash usr/plugins/vision_sidecar/scripts/enable_vision_slot.sh
-# or:  python3 usr/plugins/vision_sidecar/scripts/enable_vision_slot.py
+bash /a0/usr/plugins/vision_sidecar/scripts/enable_vision_slot.sh
+# or:  python3 /a0/usr/plugins/vision_sidecar/scripts/enable_vision_slot.py
 ```
 
 Docker (run **inside** the Agent Zero container, not on the host — `plugins/` only exists in the image):
 
 ```bash
-docker exec -it <agent-zero-container> bash usr/plugins/vision_sidecar/scripts/enable_vision_slot.sh
+docker exec -it <agent-zero-container> bash /a0/usr/plugins/vision_sidecar/scripts/enable_vision_slot.sh
 ```
 
 Options:
