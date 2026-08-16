@@ -57,6 +57,35 @@ PY_EDITS = [
  dict(op="insert_before", anchor="def is_chat_override_allowed",
       payload='def get_vision_model_config(agent=None) -> dict:\n    """Vision model config from the vision preset slot (Vision Sidecar)."""\n    return get_effective_config(agent).get("vision_model", {})\n\n\n',
       done="def get_vision_model_config"),
+ dict(op="replace",
+      anchor="""        slot_config = _get_preset_slot_config(preset, slot)
+        if not _should_apply_preset_slot(slot, slot_config):
+            continue
+        config[section] = _merge_model_slot(
+            slot,
+            config.get(section, {}),
+            slot_config,
+            strip_api_key=strip_api_key,
+        )""",
+      new="""        slot_config = _get_preset_slot_config(preset, slot)
+        if not _should_apply_preset_slot(slot, slot_config):
+            if slot == "vision":
+                # Vision Sidecar: vision is strictly per-preset — never inherit
+                # the Default preset's vision model into other presets.
+                config[section] = {}
+            continue
+        base_slot = config.get(section, {})
+        if slot == "vision":
+            # Vision Sidecar: merge vision over an empty base so a preset's own
+            # vision model replaces, never accumulates on top of, another one.
+            base_slot = {}
+        config[section] = _merge_model_slot(
+            slot,
+            base_slot,
+            slot_config,
+            strip_api_key=strip_api_key,
+        )""",
+      done='if slot == "vision":'),
 ]
 
 STORE_EDITS = [
@@ -71,8 +100,34 @@ STORE_EDITS = [
  dict(op="insert_after", anchor="      chat_model: slot(rawDefault.chat),",
       payload="      vision_model: slot(rawDefault.vision),\n", done="vision_model: slot(rawDefault.vision)"),
  dict(op="insert_after", anchor="        chat: { ...slot(effective.chat_model), _kwargs_text: kwargsToText(effective.chat_model?.kwargs) },",
-      payload="        vision: { ...slot(effective.vision_model), _kwargs_text: kwargsToText(effective.vision_model?.kwargs) },\n",
-      done="slot(effective.vision_model)"),
+      payload="""        vision: {
+          ...slot(effective.vision_model),
+          // Vision Sidecar: display defaults (64000 / 0.7) when unset
+          ...(hasModelIdentity(effective.vision_model || {})
+            ? { ctx_length: Number(effective.vision_model?.ctx_length) || 64000, ctx_history: Number(effective.vision_model?.ctx_history ?? 0.7) }
+            : { ctx_length: 64000, ctx_history: 0.7 }),
+          _kwargs_text: kwargsToText(effective.vision_model?.kwargs),
+        },
+""",
+      done="display defaults (64000 / 0.7) when unset"),
+ dict(op="replace",
+      anchor="""    const slot = preset?.[slotKey];
+    if (!slot || typeof slot !== 'object') continue;
+    if (!hasModelIdentity(slot)) continue;
+    config[sectionKey] = mergeModelSlot(config[sectionKey] || {}, slot, stripApiKey, slotKey);""",
+      new="""    const slot = preset?.[slotKey];
+    const isVision = slotKey === 'vision';
+    if (!slot || typeof slot !== 'object') {
+      if (isVision) config.vision_model = {}; // Vision Sidecar: never inherit from Default
+      continue;
+    }
+    if (!hasModelIdentity(slot)) {
+      if (isVision) config.vision_model = {}; // Vision Sidecar: never inherit from Default
+      continue;
+    }
+    // Vision Sidecar: merge vision over an empty base (strictly per-preset)
+    config[sectionKey] = mergeModelSlot(isVision ? {} : (config[sectionKey] || {}), slot, stripApiKey, slotKey);""",
+      done="const isVision = slotKey === 'vision';"),
  dict(op="replace", anchor="            chat: { provider: '', name: '', api_base: '', kwargs: {}, _kwargs_text: '' },",
       new="            chat: { provider: '', name: '', api_base: '', ctx_length: 200000, ctx_history: 0.7, kwargs: {}, _kwargs_text: '' },\n            vision: { provider: '', name: '', api_base: '', ctx_length: 64000, ctx_history: 0.7, vision: true, max_embeds: 10, kwargs: {}, _kwargs_text: '' },",
       done="vision: { provider: '', name: '', api_base: '', ctx_length: 64000"),

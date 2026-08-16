@@ -1,4 +1,4 @@
 behaviour:
   delegated_system: "You are a precise vision analyst. Answer only what was asked about the image(s). Be concise, factual, mention positions/coordinates when asked to locate."
-  max_tokens: 800
-  timeout: 60
+  max_tokens: 2000
+  timeout: 300

@@ -17,8 +17,8 @@ def get_behaviour(agent: Any = None) -> dict[str, Any]:
         b = {}
     return {
         "delegated_system": str(b.get("delegated_system") or DEFAULT_DELEGATED_SYSTEM),
-        "max_tokens": int(b.get("max_tokens") or 800),
-        "timeout": float(b.get("timeout") or 60),
+        "max_tokens": int(b.get("max_tokens") or 2000),
+        "timeout": float(b.get("timeout") or 300),
     }
 
 def get_vision_model_config(agent: Any = None) -> dict[str, Any]:
@@ -59,7 +59,7 @@ async def call_vision_model(
     images_a0_paths: list[str],
     query: str,
     delegated_system: str | None = None,
-    timeout: float = 60,
+    timeout: float = 300,
 ) -> str:
     """Call the dedicated vision preset model with images + query, return text capsule."""
     import asyncio
@@ -110,7 +110,8 @@ async def call_vision_model(
     messages = [SystemMessage(content=system), HumanMessage(content=content)]
 
     async def _call():
-        resp, _reason = await model.unified_call(messages=messages, explicit_caching=False)
+        kwargs = {"max_tokens": int(behaviour["max_tokens"])}
+        resp, _reason = await model.unified_call(messages=messages, explicit_caching=False, **kwargs)
         return resp
     try:
         return await asyncio.wait_for(_call(), timeout=float(timeout or behaviour["timeout"]))
