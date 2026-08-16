@@ -66,14 +66,33 @@ cp -r a0-vision_sidecar /a0/usr/plugins/vision-sidecar
 
 ### Add Vision slot
 
+The installer is **self-contained pure Python** — no git or `patch(1)` required, idempotent, and creates `.vision_sidecar.bak` backups of every modified file.
+
 ```bash
-# from your Agent Zero root (where plugins/_model_config lives):
-bash /a0/usr/plugins/vision-sidecar/scripts/enable_vision_slot.sh
-# or: python /a0/usr/plugins/vision-sidecar/scripts/enable_vision_slot.py
-# then restart Agent Zero and hard-refresh the browser (Ctrl+Shift+R)
+# any directory works; it auto-finds the Agent Zero root
+bash usr/plugins/vision_sidecar/scripts/enable_vision_slot.sh
+# or:  python3 usr/plugins/vision_sidecar/scripts/enable_vision_slot.py
 ```
 
-The patch is `patches/vision_preset.patch` (generated from `plugins/_model_config`). It is applied once with `git apply`; rerunning is safe.
+Docker (run **inside** the Agent Zero container, not on the host — `plugins/` only exists in the image):
+
+```bash
+docker exec -it <agent-zero-container> bash usr/plugins/vision_sidecar/scripts/enable_vision_slot.sh
+```
+
+Options:
+
+| Command | Effect |
+| --- | --- |
+| (no args) | Apply patch (skips files already patched) |
+| `--status` | Show per-file state without changing anything |
+| `--restore` | Restore all original files from `.bak` backups |
+
+If auto-detection fails, point it at your install: `A0_ROOT=/path/to/agent-zero bash enable_vision_slot.sh`.
+
+Then restart Agent Zero and hard-refresh the browser (Ctrl+Shift+R). Model Presets will show **Main / Vision / Utility / Embedding**.
+
+> Note: A0 updates can overwrite `plugins/_model_config`. After updating, rerun the script — it is idempotent and will re-apply cleanly.
 
 ## Configuration
 
