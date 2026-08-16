@@ -1,69 +1,245 @@
 #!/usr/bin/env python3
-"""Vision Sidecar — add Vision Model tab to Model Presets (optional, one-time).
-Run AFTER installing the plugin, from ANY directory."""
+"""Vision Sidecar - add the Vision Model slot to Model Presets (one-time, optional).
+
+Self-contained: no git, no patch(1) needed. Works from any directory.
+Usage:
+  python3 enable_vision_slot.py            apply (idempotent)
+  python3 enable_vision_slot.py --status   show state only
+  python3 enable_vision_slot.py --restore  restore backups (.bak)
+Docker: run INSIDE the Agent Zero container:
+  docker exec -it <container> python3 usr/plugins/vision_sidecar/scripts/enable_vision_slot.py
+Override root: A0_ROOT=/path/to/agent-zero python3 enable_vision_slot.py
+"""
+from __future__ import annotations
+import os, shutil, sys
 from pathlib import Path
-import subprocess, sys
 
-script = Path(__file__).resolve()
-plugin_dir = script.parents[1]  # .../vision_sidecar
+REPO = "https://github.com/GreifMax/a0-vision-sidecar"
 
-def find_a0_root() -> Path | None:
-    candidates = []
-    # walk up from plugin_dir (installed: /a0/usr/plugins/vision-sidecar -> /a0)
-    cur = plugin_dir
-    for _ in range(6):
-        candidates.append(cur)
+def find_a0_root(script_path: Path) -> Path | None:
+    env = os.environ.get("A0_ROOT", "").strip()
+    cands: list[Path] = []
+    # Priority: A0_ROOT env, then CWD walk-up (explicit user intent), then script walk-up
+    if env:
+        cands.append(Path(env))
+    cur = Path.cwd().resolve()
+    for _ in range(8):
+        cands.append(cur)
         cur = cur.parent
-    # also walk up from CWD (repo-clone or manual run)
-    cur = Path.cwd()
-    for _ in range(6):
-        candidates.append(cur)
+    cur = script_path.resolve()
+    for _ in range(8):
+        cands.append(cur)
         cur = cur.parent
-    # plus explicit plugin_dir/../../.. for installed layout
-    candidates.append(plugin_dir / "../../..")
-    candidates.append(plugin_dir.parents[2] if len(plugin_dir.parents) > 2 else plugin_dir)
-    for c in candidates:
+    for c in cands:
         try:
             c = c.resolve()
         except Exception:
             continue
-        if (c / "plugins/_model_config/helpers/model_config.py").exists():
+        if (c / "plugins" / "_model_config" / "helpers" / "model_config.py").is_file():
             return c
     return None
 
-a0_root = find_a0_root()
-if a0_root is None:
-    print("ERROR: cannot find Agent Zero root (plugins/_model_config/helpers/model_config.py not found).", file=sys.stderr)
-    print(f"  plugin_dir={plugin_dir}  CWD={Path.cwd()}", file=sys.stderr)
-    sys.exit(1)
+# --- edits ---------------------------------------------------------------
+V = "Optional dedicated model for vision_load - used when Main has no vision. Leave empty to use Main's vision."
 
-target = a0_root / "plugins/_model_config/helpers/model_config.py"
-print(f"Plugin dir: {plugin_dir}")
-print(f"A0 root:    {a0_root}")
-patch = plugin_dir / "patches/vision_preset.patch"
-if not patch.exists():
-    patch = a0_root / "usr/plugins/vision_sidecar/patches/vision_preset.patch"
-if not patch.exists():
-    patch = a0_root / "patches/vision_preset.patch"
-print(f"Patch:      {patch}")
+PY_EDITS = [
+ dict(op="insert_after", anchor='    "chat": "chat_model",',
+      payload='    "vision": "vision_model",\n', done='"vision": "vision_model"'),
+ dict(op="insert_after", anchor="IMPLICIT_PRESET_SLOT_DEFAULTS = {",
+      payload='    "vision": {\n        "rl_requests": 0,\n        "rl_input": 0,\n        "rl_output": 0,\n        "kwargs": {},\n    },\n',
+      done='"vision": {\n        "rl_requests": 0'),
+ dict(op="insert_after", anchor="            slot_clean = _strip_ui_fields(slot_config, strip_api_key=True)",
+      payload='            if slot == "vision" and _slot_has_identity(slot_clean):\n                slot_clean["vision"] = True\n                if "max_embeds" not in slot_clean:\n                    slot_clean["max_embeds"] = 10\n',
+      done='slot_clean["vision"] = True'),
+ dict(op="replace", anchor='for section_name in ("chat_model", "utility_model", "embedding_model"):'.replace('"','\"'),
+      new='for section_name in ("chat_model", "vision_model", "utility_model", "embedding_model"):'.replace('"','\"'),
+      done='"chat_model", "vision_model", "utility_model"'),
+ dict(op="insert_before", anchor="def is_chat_override_allowed",
+      payload='def get_vision_model_config(agent=None) -> dict:\n    """Vision model config from the vision preset slot (Vision Sidecar)."""\n    return get_effective_config(agent).get("vision_model", {})\n\n\n',
+      done="def get_vision_model_config"),
+]
 
-if '"vision": "vision_model"' in target.read_text():
-    print("Vision slot already present — nothing to do.")
-    sys.exit(0)
-if not patch.exists():
-    print(f"ERROR: patch not found: {patch}", file=sys.stderr); sys.exit(1)
-print("Applying patch...")
-try:
-    subprocess.run(["git","apply","--whitespace=nowarn", str(patch)], cwd=str(a0_root), check=True)
-    print("Patched plugins/_model_config (Main / Vision / Utility / Embedding). Restart Agent Zero and hard-refresh browser (Ctrl+Shift+R).")
-    sys.exit(0)
-except FileNotFoundError:
-    pass
-except subprocess.CalledProcessError as e:
-    # git apply failed (not a git repo or patch doesn't apply) — try patch(1)
-    print(f"git apply failed ({e}), trying patch(1)...", file=sys.stderr)
-try:
-    subprocess.run(["patch","-p1","-i", str(patch)], cwd=str(a0_root), check=True)
-    print("Patched via patch(1). Restart Agent Zero and hard-refresh browser (Ctrl+Shift+R).")
-except FileNotFoundError:
-    print("ERROR: neither git nor patch found", file=sys.stderr); sys.exit(1)
+STORE_EDITS = [
+ dict(op="insert_after", anchor="  { key: 'chat_model', title: 'Main Model', desc: 'Primary model for chat, reasoning, and browser tasks.' },",
+      payload="  { key: 'vision_model', title: 'Vision Model', desc: \"" + V + "'s vision.' },\n".replace("'s vision.' }", "\\'s vision.' }", 0) if False else "  { key: 'vision_model', title: 'Vision Model', desc: \"Optional dedicated model for vision_load - used when Main has no vision. Leave empty to use Main\\'s vision.\" },\n",
+      done="key: 'vision_model'"),
+ dict(op="insert_after", anchor="const IMPLICIT_PRESET_SLOT_DEFAULTS = {",
+      payload="  vision: {\n    rl_requests: 0,\n    rl_input: 0,\n    rl_output: 0,\n    kwargs: {},\n  },\n",
+      done="  vision: {"),
+ dict(op="insert_after", anchor="    ['chat', 'chat_model'],",
+      payload="    ['vision', 'vision_model'],\n", done="['vision', 'vision_model']"),
+ dict(op="insert_after", anchor="      chat_model: slot(rawDefault.chat),",
+      payload="      vision_model: slot(rawDefault.vision),\n", done="vision_model: slot(rawDefault.vision)"),
+ dict(op="insert_after", anchor="        chat: { ...slot(effective.chat_model), _kwargs_text: kwargsToText(effective.chat_model?.kwargs) },",
+      payload="        vision: { ...slot(effective.vision_model), _kwargs_text: kwargsToText(effective.vision_model?.kwargs) },\n",
+      done="slot(effective.vision_model)"),
+ dict(op="replace", anchor="            chat: { provider: '', name: '', api_base: '', kwargs: {}, _kwargs_text: '' },",
+      new="            chat: { provider: '', name: '', api_base: '', ctx_length: 200000, ctx_history: 0.7, kwargs: {}, _kwargs_text: '' },\n            vision: { provider: '', name: '', api_base: '', ctx_length: 64000, ctx_history: 0.7, vision: true, max_embeds: 10, kwargs: {}, _kwargs_text: '' },",
+      done="vision: { provider: '', name: '', api_base: '', ctx_length: 64000"),
+ dict(op="replace", anchor="            utility: { provider: '', name: '', api_base: '', kwargs: {}, _kwargs_text: '' },",
+      new="            utility: { provider: '', name: '', api_base: '', ctx_length: 128000, ctx_input: 0.7, kwargs: {}, _kwargs_text: '' },",
+      done="utility: { provider: '', name: '', api_base: '', ctx_length: 128000"),
+ dict(op="insert_before", anchor="        const preset = {",
+      payload="        // ensure Vision slot defaults for new presets (64000 / 0.7)\n        if (!base.vision || typeof base.vision.ctx_length === 'undefined') {\n          base.vision = { provider: '', name: '', api_base: '', ctx_length: 64000, ctx_history: 0.7, vision: true, max_embeds: 10, kwargs: {}, _kwargs_text: '', ...(base.vision || {}) };\n        }\n",
+      done="base.vision = { provider: ''"),
+ dict(op="replace", anchor="      for (const slot of ['chat', 'utility']) {",
+      new="      for (const slot of ['chat', 'vision', 'utility']) {",
+      done="['chat', 'vision', 'utility']"),
+ dict(op="replace", anchor="          if (hasModelIdentity(rest)) c[slot] = rest;",
+      new="          if (hasModelIdentity(rest)) {\n            if (slot === 'vision') { rest.vision = true; if (!('max_embeds' in rest)) rest.max_embeds = 10; }\n            c[slot] = rest;\n          }",
+      done="rest.vision = true"),
+ dict(op="insert_after", anchor="      { icon: 'chat', title: 'Main', cfg: preset?.chat, pList: chatP },",
+      payload="      { icon: 'eye', title: 'Vision', cfg: preset?.vision, pList: chatP },\n",
+      done="title: 'Vision'"),
+]
+
+MAIN_SECTION = (
+"            <section class=\"preset-model-section\">\n"
+"              <div class=\"preset-model-heading\">\n"
+"                <div class=\"section-title\">Vision Model</div>\n"
+"                <div class=\"section-description\">" + V + "</div>\n"
+"              </div>\n"
+"              <div x-data=\"{ get model() { return selectedPreset.vision; }, modelType: 'vision', providers: $store.modelConfig.chatProviders, searchType: 'chat', apiKeyMode: 'store', get providerFallback() { return selectedPreset.chat.provider; }, get apiBaseFallback() { return selectedPreset.chat.api_base; } }\">\n"
+"                <x-component path=\"/plugins/_model_config/webui/model-field.html\"></x-component>\n"
+"              </div>\n"
+"            </section>\n"
+"\n"
+)
+
+MAIN_EDITS = [
+ dict(op="insert_before_back", anchor="Utility Model</div>", back='<section class="preset-model-section">',
+      payload=MAIN_SECTION, done="section-title\">Vision Model</div>"),
+]
+
+SWITCHER_BLOCK = (
+"                    <template x-if=\"preset.vision?.name\">\n"
+"                      <div class=\"model-switcher-model-row\">\n"
+"                        <span class=\"model-switcher-model-label\">Vision</span>\n"
+"                        <span class=\"model-switcher-model-value\">\n"
+"                          <span x-text=\"preset.vision.provider\" style=\"opacity:0.5;\"></span>\n"
+"                          <span style=\"opacity:0.3; margin:0 3px;\">/</span>\n"
+"                          <span x-text=\"preset.vision.name\"></span>\n"
+"                        </span>\n"
+"                      </div>\n"
+"                    </template>\n"
+)
+SWITCHER_EDITS = [
+ dict(op="insert_before", anchor='<template x-if="preset.utility?.name">', payload=SWITCHER_BLOCK,
+      done="preset.vision?.name"),
+]
+
+FIELD_EDITS = [
+ dict(op="replace_occurrence", anchor='<template x-if="modelType === \'chat\'">', occurrence=2,
+      new='<template x-if="modelType === \'chat\' || modelType === \'vision\'">',
+      done="modelType === 'chat' || modelType === 'vision'"),
+ dict(op="replace", anchor='<template x-if="model.vision">',
+      new='<template x-if="model.vision || modelType === \'vision\'">',
+      done="model.vision || modelType === 'vision'"),
+ dict(op="replace", anchor="Maximum number of embedded images used by the chat model. Set to 0 for unlimited.",
+      new="Maximum number of embedded images used by the model. Set to 0 for unlimited.",
+      done="used by the model. Set to 0"),
+]
+
+FILES = [
+ ("plugins/_model_config/helpers/model_config.py", PY_EDITS),
+ ("plugins/_model_config/webui/model-config-store.js", STORE_EDITS),
+ ("plugins/_model_config/webui/main.html", MAIN_EDITS),
+ ("plugins/_model_config/extensions/webui/chat-input-progress-start/model-switcher.html", SWITCHER_EDITS),
+ ("plugins/_model_config/webui/model-field.html", FIELD_EDITS),
+]
+
+def line_start(text: str, idx: int) -> int:
+    return text.rfind("\n", 0, idx) + 1
+
+def apply_edit(text: str, e: dict):
+    done = e.get("done", "")
+    if done and done in text:
+        return text, "already"
+    op, anchor = e["op"], e["anchor"]
+    if op == "replace":
+        if anchor not in text: return text, "ANCHOR NOT FOUND"
+        return text.replace(anchor, e["new"], 1), "ok"
+    if op == "replace_occurrence":
+        occ, cur, seen = e["occurrence"], -1, 0
+        while True:
+            cur = text.find(anchor, cur + 1)
+            if cur < 0: break
+            seen += 1
+            if seen == occ:
+                return text[:cur] + e["new"] + text[cur + len(anchor):], "ok"
+        return text, f"OCCURRENCE {occ} NOT FOUND ({seen} total)"
+    if op == "insert_after":
+        idx = text.find(anchor)
+        if idx < 0: return text, "ANCHOR NOT FOUND"
+        nl = text.find("\n", idx + len(anchor))
+        ins = nl + 1 if nl >= 0 else len(text)
+        return text[:ins] + e["payload"] + text[ins:], "ok"
+    if op == "insert_before":
+        idx = text.find(anchor)
+        if idx < 0: return text, "ANCHOR NOT FOUND"
+        ins = line_start(text, idx)
+        return text[:ins] + e["payload"] + text[ins:], "ok"
+    if op == "insert_before_back":
+        pos = text.find(e["anchor"])
+        if pos < 0: return text, "ANCHOR NOT FOUND"
+        back = text.rfind(e["back"], 0, pos)
+        if back < 0: return text, "BACK ANCHOR NOT FOUND"
+        ins = line_start(text, back)
+        return text[:ins] + e["payload"] + text[ins:], "ok"
+    return text, "UNKNOWN OP"
+
+def main():
+    status_only = "--status" in sys.argv
+    restore = "--restore" in sys.argv
+    root = find_a0_root(Path(__file__))
+    print(f"Vision Sidecar patcher  |  repo: {REPO}")
+    if root is None:
+        print("ERROR: Agent Zero root not found (plugins/_model_config/helpers/model_config.py).", file=sys.stderr)
+        print("  - run from inside the Agent Zero folder (or its container):", file=sys.stderr)
+        print("    docker exec -it <container> python3 usr/plugins/vision_sidecar/scripts/enable_vision_slot.py", file=sys.stderr)
+        print("  - or set A0_ROOT=/path/to/agent-zero", file=sys.stderr)
+        sys.exit(1)
+    print(f"A0 root: {root}\n")
+    any_fail, changed = False, []
+    for rel, edits in FILES:
+        p = root / rel
+        if not p.is_file():
+            print(f"  MISSING FILE: {rel}"); any_fail = True; continue
+        bak = p.with_suffix(p.suffix + ".vision_sidecar.bak")
+        if restore:
+            if bak.is_file():
+                shutil.copy2(bak, p); bak.unlink(); print(f"  restored  {rel}")
+            else:
+                print(f"  no backup {rel}")
+            continue
+        text = p.read_text(encoding="utf-8")
+        report, modified = [], False
+        for e in edits:
+            text, res = apply_edit(text, e)
+            if res == "ok": modified = True
+            report.append(res)
+        if status_only:
+            print(f"  {rel}: " + ", ".join(report)); continue
+        if modified:
+            if not bak.is_file():
+                shutil.copy2(p, bak)
+            p.write_text(text, encoding="utf-8")
+            changed.append(rel)
+        bad = [r for r in report if r not in ("ok", "already")]
+        icon = "FAIL" if bad else ("PATCHED" if modified else "already")
+        print(f"  {icon:8} {rel}" + (f"  ({'; '.join(bad)})" if bad else ""))
+        if bad: any_fail = True
+    if restore: return
+    print()
+    if any_fail:
+        print("Some anchors were not found - your A0 version may be newer/older than supported.")
+        print(f"Restore originals with --restore, or open an issue: {REPO}/issues")
+        sys.exit(1)
+    if changed:
+        print("Done. Restart Agent Zero, then hard-refresh the browser (Ctrl+Shift+R).")
+        print("Model Presets now shows: Main / Vision / Utility / Embedding.")
+    else:
+        print("Everything already patched - nothing to do.")
+
+if __name__ == "__main__":
+    main()
