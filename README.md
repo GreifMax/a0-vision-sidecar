@@ -37,14 +37,14 @@ When set:
 - `raw=true` bypasses delegation and injects images directly into Main. Use for side-by-side comparison when Main must see pixels.
 - Large images over ~900 KB are auto-compressed to 1280×960 JPEG before the vision call to avoid `Request Entity Too Large` (4 MB PNG → ~250 KB).
 
-When empty: legacy path — images are injected as `RawMessage` for `chat_model.vision == true`, appearance identical to stock A0.
+When empty or overwritten by main: legacy path — images are injected as `RawMessage` for `chat_model.vision == true`, appearance identical to stock A0.
 
 Preset defaults for the Vision slot: **64000 context, 70% for history** (new presets only). Existing presets are untouched.
 
 ## Requirements
 
 - Agent Zero. If your **Settings → Model Presets → Edit** already shows **Main / Vision / Utility / Embedding** (only if you're updating the plugin), nothing else to do.
-- If it only shows **Main / Utility / Embedding** (on any A0 instance), run the one-time Vision-slot patch below — otherwise Vision Sidecar still works, but `vision_load` falls back to tolerant direct injection (no delegation).
+- If it only shows **Main / Utility / Embedding** (on any new A0 instance), run the one-time Vision-slot patch below — otherwise Vision Sidecar still works, but `vision_load` falls back to tolerant direct injection (no delegation).
 - Any LiteLLM-compatible vision model for the Vision slot (tested with `openai/gpt-4o-mini`, `qwen2-vl`).
 
 ## Installation
@@ -60,13 +60,18 @@ Preset defaults for the Vision slot: **64000 context, 70% for history** (new pre
 
 ```bash
 git clone https://github.com/GreifMax/a0-vision-sidecar
-cp -r a0-vision-sidecar /a0/usr/plugins/vision_sidecar
+cp -r a0-vision_sidecar /a0/usr/plugins/vision_sidecar
 # restart Agent Zero
 ```
 
 ### Add Vision slot
 
-The installer is **self-contained pure Python** — no git or `patch(1)` required, idempotent, and creates `.vision_sidecar.bak` backups of every modified file.
+The vision model inside the model presets can be added in two ways:
+
+- **Settings → Plugins → Vision Sidecar → Execute** (preferred), or
+- the manual script below (same logic, also usable for `--status` / `--restore`)
+
+The patcher is **self-contained pure Python** — no git or `patch(1)` required, idempotent, and creates `.vision_sidecar.bak` backups of every modified file.
 
 ```bash
 # any directory works; it auto-finds the Agent Zero root
@@ -82,10 +87,10 @@ docker exec -it <agent-zero-container> bash /a0/usr/plugins/vision_sidecar/scrip
 
 Options:
 
-| Command | Effect |
-| --- | --- |
-| (no args) | Apply patch (skips files already patched) |
-| `--status` | Show per-file state without changing anything |
+| Command     | Effect                                         |
+| ----------- | ---------------------------------------------- |
+| (no args)   | Apply patch (skips files already patched)      |
+| `--status`  | Show per-file state without changing anything  |
 | `--restore` | Restore all original files from `.bak` backups |
 
 If auto-detection fails, point it at your install: `A0_ROOT=/path/to/agent-zero bash enable_vision_slot.sh`.
@@ -97,9 +102,10 @@ Then restart Agent Zero and hard-refresh the browser (Ctrl+Shift+R). Model Prese
 ## Configuration
 
 1. **Settings → Model Presets → Edit** → fill **Vision Model** with your cheap vision helper (provider + name + key). Leave empty to use Main's vision.
-2. **Settings → Plugins → Vision Sidecar** → tune the delegated system prompt and timeout if needed.
+2. **Main Model → Supports Vision on** → optional **Overrides Vision Model** switch appears right under it: when on, Main's native vision is always used for that preset and the Vision Model is ignored; when off (default), the dedicated Vision Model handles vision when configured. The chat model switcher hides the Vision row for presets where the override is on, and the Agent Config preset preview shows "Overwritten by Main" in place of the Vision model when the override is active.
+3. **Settings → Plugins → Vision Sidecar** → tune the delegated system prompt and timeout if needed.
 
-New presets automatically get `Vision: 64000 / 0.7`. Current presets keep their values.
+New presets automatically get `Vision: 64000 / 0.7`. Current presets keep their values. The override flag is per-preset (never inherited from Default).
 
 ## Usage (By A0)
 
@@ -113,9 +119,11 @@ New presets automatically get `Vision: 64000 / 0.7`. Current presets keep their 
 }
 ```
 
-- With Vision Model set → chat shows thumbnails + `Loaded images: 1 … [Vision analysis via dedicated vision model — query: "…"]` + capsule text.
+- With Vision Model set -> chat shows thumbnails + `N images sent, M images skipped - Description: "..."` (counts + vision-model capsule in one line). The tool step always includes a Query row (Paths / Tool Name / Query / Result), even when the call omitted `query`.
+- The delegated `vision_load` prompt declares an explicit JSON tool schema (`paths`, `query`, `raw`), so models see `query` as a real parameter. When the Main model overrides vision (or there is no Vision Model), the stock prompt is used and `query` is absent from the schema. The schema rejects unknown properties (`additionalProperties: false`), and the tool normalizes prompt-style aliases (`Prompt`, `question`, `instruction`, ...) into `query`, so the vision model always receives the intended focus text even if a model ignores the schema.
 - With `raw=true` → forces direct injection even when Vision Model is set.
-- Without Vision Model → standard `Loaded images: N` with thumbnails for Main vision.
+- Without Vision Model -> fully stock: stock prompt (no `query`/`raw`), `Loaded images: N` with thumbnails for Main vision, and no vision tool at all when Main has no vision.
+- With **Overrides Vision Model** on (Main vision-capable presets) -> Main's native vision is used even though a Vision Model is set; delegation (and the switcher's Vision row) is skipped for that preset.
 
 ## File layout
 

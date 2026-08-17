@@ -146,6 +146,57 @@ STORE_EDITS = [
  dict(op="insert_after", anchor="      { icon: 'chat', title: 'Main', cfg: preset?.chat, pList: chatP },",
       payload="      { icon: 'eye', title: 'Vision', cfg: preset?.vision, pList: chatP },\n",
       done="title: 'Vision'"),
+ dict(op="replace",
+      anchor="""    ].map(s => ({ icon: s.icon, title: s.title, provider: label(s.pList, s.cfg?.provider), name: s.cfg?.name || '\\u2014' }));""",
+      new="""    ].map(s => {
+      const overridden = s.title === 'Vision'
+        && (s.cfg?.provider || s.cfg?.name)
+        && preset?.chat?.vision
+        && preset?.chat?.vision_override;
+      return {
+        icon: s.icon,
+        title: s.title,
+        provider: label(s.pList, s.cfg?.provider),
+        name: s.cfg?.name || '\\u2014',
+        note: overridden ? 'Overwritten by Main' : '',
+      };
+    });""",
+      done="note: overridden"),
+]
+
+OVERVIEW_EDITS = [
+ dict(op="replace",
+      anchor="""          <span class="model-preset-identity">
+            <span class="model-preset-provider" x-text="model.provider"></span>
+            <span class="model-preset-separator">/</span>
+            <span x-text="model.name"></span>
+          </span>""",
+      new="""          <span class="model-preset-identity">
+            <template x-if="model.note">
+              <span class="model-preset-note" x-text="model.note"></span>
+            </template>
+            <template x-if="!model.note">
+              <span class="model-preset-plain">
+                <span class="model-preset-provider" x-text="model.provider"></span>
+                <span class="model-preset-separator">/</span>
+                <span x-text="model.name"></span>
+              </span>
+            </template>
+          </span>""",
+      done="model-preset-note"),
+ dict(op="replace",
+      anchor="""    .model-preset-separator {
+      margin: 0 0.25rem;
+    }""",
+      new="""    .model-preset-separator {
+      margin: 0 0.25rem;
+    }
+
+    .model-preset-note {
+      opacity: 0.65;
+      font-style: italic;
+    }""",
+      done=".model-preset-note {"),
 ]
 
 MAIN_SECTION = (
@@ -167,7 +218,7 @@ MAIN_EDITS = [
 ]
 
 SWITCHER_BLOCK = (
-"                    <template x-if=\"preset.vision?.name\">\n"
+"                    <template x-if=\"preset.vision?.name && !(preset.chat?.vision && preset.chat?.vision_override)\">\n"
 "                      <div class=\"model-switcher-model-row\">\n"
 "                        <span class=\"model-switcher-model-label\">Vision</span>\n"
 "                        <span class=\"model-switcher-model-value\">\n"
@@ -179,8 +230,11 @@ SWITCHER_BLOCK = (
 "                    </template>\n"
 )
 SWITCHER_EDITS = [
+ dict(op="replace_optional", anchor='<template x-if="preset.vision?.name">',
+      new='<template x-if="preset.vision?.name && !(preset.chat?.vision && preset.chat?.vision_override)">',
+      done="preset.vision?.name && !(preset.chat?.vision && preset.chat?.vision_override)"),
  dict(op="insert_before", anchor='<template x-if="preset.utility?.name">', payload=SWITCHER_BLOCK,
-      done="preset.vision?.name"),
+      done="preset.vision?.name && !(preset.chat?.vision && preset.chat?.vision_override)"),
 ]
 
 FIELD_EDITS = [
@@ -195,12 +249,61 @@ FIELD_EDITS = [
       done="used by the model. Set to 0"),
 ]
 
+FIELD_OVERRIDE_BLOCK = ("""    <!-- Vision Model override (Main chat only) -->
+    <template x-if="modelType === 'chat' && model.vision">
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">Overrides Vision Model</div>
+          <div class="field-description">If enabled, this model's native vision is always used and the preset's Vision Model is ignored. If disabled, the dedicated Vision Model handles vision when configured.</div>
+        </div>
+        <div class="field-control">
+          <label class="toggle">
+            <input type="checkbox" x-model="model.vision_override" />
+            <span class="toggler"></span>
+          </label>
+        </div>
+      </div>
+    </template>
+
+""")
+
+FIELD_EDITS.append(dict(op="insert_before", anchor="<!-- Context window size (main and utility only) -->",
+      payload=FIELD_OVERRIDE_BLOCK, done="Overrides Vision Model"))
+
+RESPONSES_EDITS = [
+ # New A0 (2026-08+): stock _vision_tool_prompt exists -> make it Vision Sidecar aware.
+ dict(op="replace_optional",
+      anchor='def _vision_tool_prompt(agent: Any) -> str:\n    try:\n        from plugins._model_config.helpers.model_config import get_chat_model_config\n\n        if not get_chat_model_config(agent).get("vision", False):\n            return ""\n        return agent.read_prompt("agent.system.tools_vision.md")\n    except Exception:\n        return ""\n\n\n',
+      new='def _vision_tool_prompt(agent: Any) -> str:\n    try:\n        from plugins._model_config.helpers.model_config import get_chat_model_config\n    except Exception:\n        return ""\n    # Vision Sidecar: a dedicated Vision Model takes precedence over main vision.\n    try:\n        from usr.plugins.vision_sidecar.helpers.vision_model import has_vision_model\n\n        if has_vision_model(agent):\n            return agent.read_prompt("vision_sidecar.delegated.md")\n    except Exception:\n        pass\n    try:\n        if not get_chat_model_config(agent).get("vision", False):\n            return ""\n        return agent.read_prompt("agent.system.tools_vision.md")\n    except Exception:\n        return ""\n\n\n',
+      done='Vision Sidecar: a dedicated Vision Model takes precedence over main vision.'),
+ # Older A0: no _vision_tool_prompt -> insert the sidecar-aware function.
+ dict(op="insert_before", anchor="def _include_local_tool_prompt(",
+      payload='def _vision_tool_prompt(agent: Any) -> str:\n    try:\n        from plugins._model_config.helpers.model_config import get_chat_model_config\n    except Exception:\n        return ""\n    # Vision Sidecar: a dedicated Vision Model takes precedence over main vision.\n    try:\n        from usr.plugins.vision_sidecar.helpers.vision_model import has_vision_model\n\n        if has_vision_model(agent):\n            return agent.read_prompt("vision_sidecar.delegated.md")\n    except Exception:\n        pass\n    try:\n        if not get_chat_model_config(agent).get("vision", False):\n            return ""\n        return agent.read_prompt("agent.system.tools_vision.md")\n    except Exception:\n        return ""\n\n\n',
+      done='Vision Sidecar: a dedicated Vision Model takes precedence over main vision.'),
+ # Older A0: hook the vision prompt into _local_tool_prompts.
+ dict(op="replace_optional",
+      anchor='        tool_name = _tool_name_from_prompt(prompt, fallback=fallback_name)\n        if not _include_local_tool_prompt(agent, tool_name):\n            continue\n        result.append((tool_name, prompt))\n    return result',
+      new='        tool_name = _tool_name_from_prompt(prompt, fallback=fallback_name)\n        if not _include_local_tool_prompt(agent, tool_name):\n            continue\n        result.append((tool_name, prompt))\n\n    vision_prompt = _vision_tool_prompt(agent)\n    if vision_prompt:\n        result.append(("vision_load", vision_prompt))\n    return result',
+      done='vision_prompt = _vision_tool_prompt(agent)'),
+]
+
+TOOLSPROMPT_EDITS = [
+ # Vision block is identical in old and new stock.
+ dict(op="replace",
+      anchor='    # vision support\n    from plugins._model_config.helpers.model_config import get_chat_model_config\n\n    chat_cfg = get_chat_model_config(agent)\n    if chat_cfg.get("vision", False):\n        prompt += "\\n\\n" + agent.read_prompt("agent.system.tools_vision.md")\n',
+      new='    # vision support (Vision Sidecar: dedicated Vision Model takes precedence)\n    from plugins._model_config.helpers.model_config import get_chat_model_config\n\n    chat_cfg = get_chat_model_config(agent)\n    try:\n        from usr.plugins.vision_sidecar.helpers.vision_model import has_vision_model\n\n        has_sidecar = has_vision_model(agent)\n    except Exception:\n        has_sidecar = False\n    if has_sidecar:\n        prompt += "\\n\\n" + agent.read_prompt("vision_sidecar.delegated.md")\n    elif chat_cfg.get("vision", False):\n        prompt += "\\n\\n" + agent.read_prompt("agent.system.tools_vision.md")\n',
+      done='(Vision Sidecar: dedicated Vision Model takes precedence)'),
+]
+
 FILES = [
  ("plugins/_model_config/helpers/model_config.py", PY_EDITS),
  ("plugins/_model_config/webui/model-config-store.js", STORE_EDITS),
  ("plugins/_model_config/webui/main.html", MAIN_EDITS),
  ("plugins/_model_config/extensions/webui/chat-input-progress-start/model-switcher.html", SWITCHER_EDITS),
  ("plugins/_model_config/webui/model-field.html", FIELD_EDITS),
+ ("plugins/_model_config/webui/preset-overview.html", OVERVIEW_EDITS),
+ ("helpers/responses_tools.py", RESPONSES_EDITS),
+ ("extensions/python/system_prompt/_11_tools_prompt.py", TOOLSPROMPT_EDITS),
 ]
 
 def line_start(text: str, idx: int) -> int:
@@ -223,6 +326,10 @@ def apply_edit(text: str, e: dict):
             if seen == occ:
                 return text[:cur] + e["new"] + text[cur + len(anchor):], "ok"
         return text, f"OCCURRENCE {occ} NOT FOUND ({seen} total)"
+    if op == "replace_optional":
+        if anchor not in text:
+            return text, "skip"
+        return text.replace(anchor, e["new"], 1), "ok"
     if op == "insert_after":
         idx = text.find(anchor)
         if idx < 0: return text, "ANCHOR NOT FOUND"
@@ -243,9 +350,7 @@ def apply_edit(text: str, e: dict):
         return text[:ins] + e["payload"] + text[ins:], "ok"
     return text, "UNKNOWN OP"
 
-def main():
-    status_only = "--status" in sys.argv
-    restore = "--restore" in sys.argv
+def run(status_only: bool = False, restore: bool = False) -> int:
     root = find_a0_root(Path(__file__))
     print(f"Vision Sidecar patcher  |  repo: {REPO}")
     if root is None:
@@ -253,7 +358,7 @@ def main():
         print("  - run from inside the Agent Zero folder (or its container):", file=sys.stderr)
         print("    docker exec -it <container> python3 usr/plugins/vision_sidecar/scripts/enable_vision_slot.py", file=sys.stderr)
         print("  - or set A0_ROOT=/path/to/agent-zero", file=sys.stderr)
-        sys.exit(1)
+        return 1
     print(f"A0 root: {root}\n")
     any_fail, changed = False, []
     for rel, edits in FILES:
@@ -263,7 +368,16 @@ def main():
         bak = p.with_suffix(p.suffix + ".vision_sidecar.bak")
         if restore:
             if bak.is_file():
-                shutil.copy2(bak, p); bak.unlink(); print(f"  restored  {rel}")
+                current = ""
+                try:
+                    current = p.read_text(encoding="utf-8")
+                except Exception:
+                    pass
+                still_patched = any(e.get("done", "") and e["done"] in current for e in edits)
+                if still_patched:
+                    shutil.copy2(bak, p); bak.unlink(); print(f"  restored  {rel}")
+                else:
+                    print(f"  skipped   {rel} (no Vision Sidecar edits present — core may have been updated; keeping current file)")
             else:
                 print(f"  no backup {rel}")
             continue
@@ -280,21 +394,30 @@ def main():
                 shutil.copy2(p, bak)
             p.write_text(text, encoding="utf-8")
             changed.append(rel)
-        bad = [r for r in report if r not in ("ok", "already")]
+        bad = [r for r in report if r not in ("ok", "already", "skip")]
         icon = "FAIL" if bad else ("PATCHED" if modified else "already")
         print(f"  {icon:8} {rel}" + (f"  ({'; '.join(bad)})" if bad else ""))
         if bad: any_fail = True
-    if restore: return
+    if restore: return 0
     print()
     if any_fail:
         print("Some anchors were not found - your A0 version may be newer/older than supported.")
         print(f"Restore originals with --restore, or open an issue: {REPO}/issues")
-        sys.exit(1)
+        return 1
     if changed:
         print("Done. Restart Agent Zero, then hard-refresh the browser (Ctrl+Shift+R).")
         print("Model Presets now shows: Main / Vision / Utility / Embedding.")
-    else:
-        print("Everything already patched - nothing to do.")
+        return 0
+    print("Everything already patched - nothing to do.")
+    return 0
+
+def main():
+    status_only = "--status" in sys.argv
+    restore = "--restore" in sys.argv
+    rc = run(status_only=status_only, restore=restore)
+    if rc:
+        sys.exit(rc)
+
 
 if __name__ == "__main__":
     main()

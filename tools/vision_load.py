@@ -20,6 +20,36 @@ class VisionLoad(Tool):
         self.query = str(query or "").strip()
         self._raw = bool(raw) if isinstance(raw, bool) else str(raw).lower() in ("true", "1", "yes")
 
+        # --- Phase 0: normalize prompt-style aliases into `query` ---
+        # Some models send a differently-named focus argument ("Prompt", "question",
+        # "instruction", ...) despite the schema. Map any alias onto `query` so the
+        # vision model always receives the intended focus text.
+        _alias_map = {
+            "prompt": "query",
+            "prompt_text": "query",
+            "question": "query",
+            "instruction": "query",
+            "instructions": "query",
+            "focus": "query",
+            "request": "query",
+            "force_raw": "raw",
+        }
+        _canonical: dict = {}
+        for _k in list(kwargs.keys()):
+            _target = _alias_map.get(str(_k).strip().lower())
+            if _target:
+                _canonical.setdefault(_target, kwargs.pop(_k))
+        if not self.query:
+            _alias_q = _canonical.get("query")
+            if isinstance(_alias_q, str) and _alias_q.strip():
+                self.query = _alias_q.strip()
+        if not self._raw:
+            _alias_r = _canonical.get("raw")
+            if isinstance(_alias_r, bool):
+                self._raw = _alias_r
+            elif isinstance(_alias_r, str) and _alias_r.strip().lower() in ("true", "1", "yes"):
+                self._raw = True
+
         # --- Phase 1: tolerant coerce paths ---
         coerce = paths
         if isinstance(coerce, str):
@@ -194,6 +224,31 @@ class VisionLoad(Tool):
             return f"{prefix},<ephemeral-image-{index}>"
         return value
 
+    async def before_execution(self, **kwargs):
+        # Vision Sidecar: the focus argument is named `query`. Some models send a
+        # differently-named key ("Prompt", "question", ...) despite the schema — fold
+        # any alias into `query` in the logged args so the user sees exactly one row,
+        # and always show the Query row in delegated mode even when it was omitted.
+        try:
+            if not isinstance(self.args, dict):
+                self.args = dict(self.args or {})
+            aliases = ("prompt", "prompt_text", "question", "instruction", "instructions", "focus", "request")
+            alias_value = ""
+            for key in list(self.args.keys()):
+                if str(key).strip().lower() in aliases:
+                    val = self.args.pop(key)
+                    if isinstance(val, str) and val.strip() and not alias_value:
+                        alias_value = val.strip()
+            if not self.args.get("query"):
+                from usr.plugins.vision_sidecar.helpers.vision_model import has_vision_model
+                if has_vision_model(self.agent):
+                    self.args["query"] = alias_value
+            elif alias_value and not str(self.args.get("query") or "").strip():
+                self.args["query"] = alias_value
+        except Exception:
+            pass
+        await super().before_execution(**kwargs)
+
     async def after_execution(self, response: Response, **kwargs):
         # Handle arg error first: return as tool_result error (not raise)
         if getattr(self, "_arg_error", None):
@@ -253,16 +308,14 @@ class VisionLoad(Tool):
                 self._is_delegated = False
 
         if getattr(self, "_is_delegated", False) and self._delegated_capsule is not None:
-            # Success delegated — display like native vision_load for chat UI parity
-            q = getattr(self, "query", "").strip()
-            q_label = f'"{q}"' if q else "(generic description)"
-            combined = (
-                summary
-                + f"\n\n[Vision analysis via dedicated vision model — query: {q_label}]\n"
-                + self._delegated_capsule
+            # Success delegated — stock-like one-liner: counts + Description
+            flat = " ".join(self._delegated_capsule.split())
+            message = (
+                f"{loaded_count} images sent, {skipped_count} images skipped"
+                f' - Description: "{flat}"'
             )
             lid = getattr(getattr(self, 'log', None), 'id', '') or ''
-            self.agent.hist_add_tool_result(self.name, combined, id=lid)
+            self.agent.hist_add_tool_result(self.name, message, id=lid)
             # Inject RawMessage thumbnails for UI parity with native vision (trimmed before LLM if Main has no vision)
             if self.images_dict:
                 content = []
@@ -273,13 +326,10 @@ class VisionLoad(Tool):
                         content.append({"type": "text", "text": "Error processing image " + path})
                 msg = history.RawMessage(raw_content=content, preview="<Image attachments loaded by path>")
                 self.agent.hist_add_message(False, content=msg, tokens=TOKENS_ESTIMATE * len(content))
-            message = f"{loaded_count} images loaded, {skipped_count} skipped — vision analysis done (query: {q_label})"
             PrintStyle(font_color="#1B4F72", background_color="white", padding=True, bold=True).print(
                 f"{self.agent.agent_name}: Response from tool '{self.name}'"
             )
             PrintStyle(font_color="#85C1E9").print(message)
-            # also print capsule preview short
-            PrintStyle(font_color="#85C1E9").print(self._delegated_capsule[:500] + ("..." if len(self._delegated_capsule) > 500 else ""))
             try:
                 self.log.update(result=message)
             except Exception:

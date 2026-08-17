@@ -43,7 +43,16 @@ def get_vision_model_config(agent: Any = None) -> dict[str, Any]:
 
 def has_vision_model(agent: Any = None) -> bool:
     vm = get_vision_model_config(agent)
-    return bool(vm.get("provider") and vm.get("name"))
+    if not (vm.get("provider") and vm.get("name")):
+        return False
+    try:
+        from plugins._model_config.helpers.model_config import get_chat_model_config
+        chat_cfg = get_chat_model_config(agent) or {}
+        if chat_cfg.get("vision", False) and chat_cfg.get("vision_override", False):
+            return False  # Main's native vision overrides the Vision Model
+    except Exception:
+        pass
+    return True
 
 def build_vision_model(agent: Any = None):
     vm = get_vision_model_config(agent)
