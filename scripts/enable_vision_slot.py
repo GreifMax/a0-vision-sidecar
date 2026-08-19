@@ -287,6 +287,13 @@ RESPONSES_EDITS = [
       done='vision_prompt = _vision_tool_prompt(agent)'),
 ]
 
+PARALLEL_EDITS = [
+ dict(op="replace",
+      anchor='    try:\n        job.log_item.update(content=content)\n    except Exception:\n        pass\n',
+      new='    try:\n        # Avoid duplicating text that the tool already placed in the "result"\n        # kvps row of the step table. When the tool\'s result row matches the\n        # job result, skip the body content write so the step shows the text\n        # only once (inside the Result row).\n        existing_result = (job.log_item.kvps or {}).get("result") if job.state == "success" else None\n        if existing_result is not None and str(existing_result).strip() == str(content).strip():\n            return\n        job.log_item.update(content=content)\n    except Exception:\n        pass\n',
+      done="Avoid duplicating text that the tool already placed"),
+]
+
 TOOLSPROMPT_EDITS = [
  # Vision block is identical in old and new stock.
  dict(op="replace",
@@ -304,6 +311,7 @@ FILES = [
  ("plugins/_model_config/webui/preset-overview.html", OVERVIEW_EDITS),
  ("helpers/responses_tools.py", RESPONSES_EDITS),
  ("extensions/python/system_prompt/_11_tools_prompt.py", TOOLSPROMPT_EDITS),
+ ("helpers/parallel_tools.py", PARALLEL_EDITS),
 ]
 
 def line_start(text: str, idx: int) -> int:

@@ -157,13 +157,40 @@ class VisionLoad(Tool):
         return Response(message="dummy", break_loop=False)
 
     def _get_max_embeds(self) -> int:
-        cfg = plugins.get_plugin_config("_model_config", agent=self.agent) or {}
-        chat_cfg = cfg.get("chat_model", {}) or {}
-        max_embeds = chat_cfg.get("max_embeds", 10)
+        # Prefer the effective (preset-aware) chat config; fall back to raw plugin config.
         try:
-            return int(max_embeds or 0)
+            from plugins._model_config.helpers.model_config import get_chat_model_config
+            chat_cfg = get_chat_model_config(self.agent) or {}
+        except Exception:
+            cfg = plugins.get_plugin_config("_model_config", agent=self.agent) or {}
+            chat_cfg = cfg.get("chat_model", {}) or {}
+        try:
+            return int(chat_cfg.get("max_embeds", 10) or 0)
         except Exception:
             return 10
+
+    def _main_has_vision(self) -> bool:
+        # Whether the *main* chat model accepts image content. Injected image_url
+        # blocks must never reach a text-only provider (400 "content.type invalid").
+        try:
+            from plugins._model_config.helpers.model_config import get_chat_model_config
+            return bool(get_chat_model_config(self.agent).get("vision", False))
+        except Exception:
+            try:
+                cfg = plugins.get_plugin_config("_model_config", agent=self.agent) or {}
+                return bool((cfg.get("chat_model", {}) or {}).get("vision", False))
+            except Exception:
+                return False
+
+    def _update_log(self, message: str) -> None:
+        # Write the "Result" row (kvps) of the tool's log item — including inside
+        # `parallel` workers. The parent's _update_parallel_child_log only writes
+        # the plain body text (`content=`) of the same item; it never sets the
+        # `result` row, so skipping this write would lose the Result row entirely.
+        try:
+            self.log.update(result=message)
+        except Exception:
+            pass
 
     def _context_id(self) -> str:
         return str(getattr(getattr(self.agent, "context", None), "id", "") or "").strip()
@@ -255,14 +282,12 @@ class VisionLoad(Tool):
             msg = self._arg_error
             lid = getattr(getattr(self, 'log', None), 'id', '') or ''
             self.agent.hist_add_tool_result(self.name, msg, id=lid)
+            response.message = msg  # authoritative result: parallel workers return response.message
             PrintStyle(font_color="#1B4F72", background_color="white", padding=True, bold=True).print(
                 f"{self.agent.agent_name}: Response from tool '{self.name}'"
             )
             PrintStyle(font_color="#E74C3C").print(msg)
-            try:
-                self.log.update(result=msg)
-            except Exception:
-                pass
+            self._update_log(msg)
             return
 
         content = []
@@ -271,15 +296,16 @@ class VisionLoad(Tool):
         loaded_summary = "\n".join(self.loaded_paths) if self.loaded_paths else "none"
         skipped_summary = "\n".join(self.skipped_paths) if self.skipped_paths else "none"
         summary = (
-            f"Loaded images: {loaded_count}\n"
-            f"Loaded images:\n{loaded_summary}\n\n"
-            f"Skipped images: {skipped_count}\n"
-            f"Skipped images (max {self._get_max_embeds()} loaded at a time according to model configuration):\n{skipped_summary}"
+            f"Loaded images ({loaded_count}):\n{loaded_summary}\n\n"
+            f"Skipped images ({skipped_count}, max {self._get_max_embeds()} loaded at a time according to model configuration):\n{skipped_summary}"
         )
 
-        # Determine delegation
+        # Determine delegation. `raw=true` is honored only when the main model can
+        # actually receive images; on a text-only main raw injection is impossible,
+        # so we delegate to the Vision Model instead of leaking image blocks.
+        main_has_vision = self._main_has_vision()
         should_delegate = False
-        if self.images_dict and not getattr(self, "_raw", False):
+        if self.images_dict and (not getattr(self, "_raw", False) or not main_has_vision):
             try:
                 from usr.plugins.vision_sidecar.helpers.vision_model import has_vision_model, call_vision_model, get_behaviour
                 if has_vision_model(self.agent):
@@ -316,8 +342,13 @@ class VisionLoad(Tool):
             )
             lid = getattr(getattr(self, 'log', None), 'id', '') or ''
             self.agent.hist_add_tool_result(self.name, message, id=lid)
-            # Inject RawMessage thumbnails for UI parity with native vision (trimmed before LLM if Main has no vision)
-            if self.images_dict:
+            response.message = message  # authoritative result: parallel workers return response.message
+            # Inject RawMessage thumbnails for UI parity with native vision when the
+            # main preset declares vision support. The flag is the user's declaration
+            # and governs: if it mislabels a text-only provider, the resulting provider
+            # error is a configuration issue the user owns — the capsule still carries
+            # the answer in the meantime. (Deliberate design decision, restored 0.7.7.)
+            if self.images_dict and main_has_vision:
                 content = []
                 for path, image_path in self.images_dict.items():
                     if image_path:
@@ -330,10 +361,7 @@ class VisionLoad(Tool):
                 f"{self.agent.agent_name}: Response from tool '{self.name}'"
             )
             PrintStyle(font_color="#85C1E9").print(message)
-            try:
-                self.log.update(result=message)
-            except Exception:
-                pass
+            self._update_log(message)
             return
 
         if getattr(self, "_delegation_error", None):
@@ -346,18 +374,16 @@ class VisionLoad(Tool):
             lid = getattr(getattr(self, 'log', None), 'id', '') or ''
             self.agent.hist_add_tool_result(self.name, combined, id=lid)
             message = f"Vision model error — {self._delegation_error[:200]}"
+            response.message = message  # authoritative result: parallel workers return response.message
             PrintStyle(font_color="#1B4F72", background_color="white", padding=True, bold=True).print(
                 f"{self.agent.agent_name}: Response from tool '{self.name}'"
             )
             PrintStyle(font_color="#E74C3C").print(message)
-            try:
-                self.log.update(result=message)
-            except Exception:
-                pass
+            self._update_log(message)
             return
 
         # Legacy / raw / no vision_model path: inject images as RawMessage
-        if self.images_dict:
+        if self.images_dict and main_has_vision:
             lid = getattr(getattr(self, 'log', None), 'id', '') or ''
             self.agent.hist_add_tool_result(self.name, summary, id=lid)
             for path, image_path in self.images_dict.items():
@@ -367,6 +393,16 @@ class VisionLoad(Tool):
                     content.append({"type": "text", "text": "Error processing image " + path})
             msg = history.RawMessage(raw_content=content, preview="<Image attachments loaded by path>")
             self.agent.hist_add_message(False, content=msg, tokens=TOKENS_ESTIMATE * len(content))
+        elif self.images_dict:
+            # No vision anywhere (no Vision Model, main has no vision): never inject
+            # image blocks a text-only provider would reject.
+            lid = getattr(getattr(self, 'log', None), 'id', '') or ''
+            self.agent.hist_add_tool_result(
+                self.name,
+                summary
+                + "\n\n[Images not injected: the main model has no vision and no Vision Model is configured for delegation.]",
+                id=lid,
+            )
         else:
             lid2 = getattr(getattr(self, 'log', None), 'id', '') or ''
             self.agent.hist_add_tool_result(
@@ -378,11 +414,9 @@ class VisionLoad(Tool):
             if not self.images_dict and not self.skipped_paths
             else f"{loaded_count} images loaded, {skipped_count} skipped"
         )
+        response.message = message  # authoritative result: parallel workers return response.message
         PrintStyle(font_color="#1B4F72", background_color="white", padding=True, bold=True).print(
             f"{self.agent.agent_name}: Response from tool '{self.name}'"
         )
         PrintStyle(font_color="#85C1E9").print(message)
-        try:
-            self.log.update(result=message)
-        except Exception:
-            pass
+        self._update_log(message)
