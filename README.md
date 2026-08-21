@@ -1,7 +1,5 @@
 # Vision Sidecar
 
-![Vision Sidecar](webui/thumbnail.jpg)
-
 Tolerant `vision_load` + optional dedicated Vision Model.
 
 ## Why
